@@ -84,12 +84,38 @@
   async function getSegmenter() {
     if (segmenterPromise) return segmenterPromise;
     segmenterPromise = (async () => {
-      const mod = await import(ASSETS_BASE + 'vision_bundle.mjs');
-      const { ImageSegmenter, FilesetResolver } = mod;
-      const fileset = await FilesetResolver.forVisionTasks(ASSETS_BASE);
+      // Some hosts (Google Meet, etc.) have a strict script-src CSP that blocks
+      // chrome-extension:// <script src>. MediaPipe internally injects a
+      // <script> to load its wasm glue, so we prefetch into blob: URLs which
+      // virtually every CSP allows.
+      async function toBlobUrl(name, mime) {
+        const r = await fetch(ASSETS_BASE + name);
+        const b = await r.blob();
+        return URL.createObjectURL(new Blob([await b.arrayBuffer()], { type: mime }));
+      }
+      const [bundleUrl, loaderUrl, wasmUrl] = await Promise.all([
+        toBlobUrl('vision_bundle.mjs',        'text/javascript'),
+        toBlobUrl('vision_wasm_internal.js',  'text/javascript'),
+        toBlobUrl('vision_wasm_internal.wasm','application/wasm'),
+      ]);
+
+      const mod = await import(bundleUrl);
+      const { ImageSegmenter } = mod;
+
+      // Build the fileset object manually — same shape MediaPipe expects.
+      const fileset = {
+        wasmLoaderPath: loaderUrl,
+        wasmBinaryPath: wasmUrl,
+        assetLoaderPath: loaderUrl,
+        assetBinaryPath: wasmUrl
+      };
+
+      // Model file too: fetch as ArrayBuffer and hand to baseOptions.modelAssetBuffer
+      const modelBuf = await (await fetch(ASSETS_BASE + 'selfie_segmenter.tflite')).arrayBuffer();
+
       const segmenter = await ImageSegmenter.createFromOptions(fileset, {
         baseOptions: {
-          modelAssetPath: ASSETS_BASE + 'selfie_segmenter.tflite',
+          modelAssetBuffer: new Uint8Array(modelBuf),
           delegate: 'GPU'
         },
         runningMode: 'VIDEO',
