@@ -217,33 +217,17 @@
           cmask.close();
 
           // Upscale with bilinear filter + heavy blur on the alpha for soft feather.
-          // First upscale to an intermediate size to avoid blocky bilinear when going 256 -> 1280 directly.
+          // Larger feather (12px) hides the residual halo by turning the sharp
+          // edge into a gentle gradient that reads as depth-of-field, not a bug.
           maskCtx.save();
           maskCtx.clearRect(0, 0, width, height);
           maskCtx.imageSmoothingEnabled = true;
           maskCtx.imageSmoothingQuality = 'high';
-          maskCtx.filter = 'blur(6px)';
+          maskCtx.filter = 'blur(12px)';
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
-          // Erosion pass: shrink the mask inward by a few pixels to kill the
-          // halo of raw background that bleeds through near the silhouette.
-          // Implementation: 'source-in' with itself slightly downscaled in alpha
-          // doesn't help; instead we use a darken approach -- draw the mask onto
-          // itself with reduced alpha at small offsets, then the only pixels that
-          // stay fully opaque are those that were opaque in EVERY shifted copy =
-          // morphological erosion approximation.
-          erodeCtx.clearRect(0, 0, width, height);
-          erodeCtx.globalCompositeOperation = 'source-over';
-          erodeCtx.drawImage(maskCanvas, 0, 0);
-          erodeCtx.globalCompositeOperation = 'destination-in';
-          const ERODE_PX = 2;
-          for (const [dx, dy] of [[ERODE_PX,0],[-ERODE_PX,0],[0,ERODE_PX],[0,-ERODE_PX]]) {
-            erodeCtx.drawImage(maskCanvas, dx, dy);
-          }
-          erodeCtx.globalCompositeOperation = 'source-over';
-          maskCtx.clearRect(0, 0, width, height);
-          maskCtx.drawImage(erodeCanvas, 0, 0);
+          // (Erosion removed — it was eating hair tips and ears.)
 
           // Temporal smoothing: smoothed = prev*0.6 + new*0.4 (sweet spot between
           // flicker reduction and motion lag).
