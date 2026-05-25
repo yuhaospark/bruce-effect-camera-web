@@ -25,10 +25,8 @@ window.BruceWebGLRenderer = class WebGLRenderer {
 in vec2 a_pos;
 out vec2 v_uv;
 void main(){
-  // Flip Y in UV so texture row 0 (first uploaded row = top of image) maps
-  // to the top of the output. This way ALL textures (video, mask, bg, FBO
-  // results) live in the same "image" orientation — no per-upload flipY juggling.
-  v_uv = vec2(a_pos.x, -a_pos.y) * 0.5 + 0.5;
+  v_uv = a_pos * 0.5 + 0.5;
+  // Flip Y so textures (uploaded with UNPACK_FLIP_Y=true) render upright.
   gl_Position = vec4(a_pos.x, a_pos.y, 0.0, 1.0);
 }`;
 
@@ -227,10 +225,11 @@ void main(){ fragColor = texture(u_src, v_uv); }`;
     const gl = this.gl;
     const W = this.width, H = this.height;
 
-    // 1. Upload video frame (no flipY — handled uniformly in vertex shader).
+    // 1. Upload video frame.
     gl.bindTexture(gl.TEXTURE_2D, this.texVideo);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
     const mode = config.mode || 'none';
 
@@ -339,8 +338,9 @@ void main(){ fragColor = texture(u_src, v_uv); }`;
 
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texBg);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, c);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   }
 
   _copyVideoToBg() {
