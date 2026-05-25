@@ -1,17 +1,5 @@
 // inject.js — runs in the page's MAIN world.
-// Patches navigator.mediaDevices.getUserMedia so the page sees a processed video stream
-// instead of the raw camera feed.
-//
-// Architecture:
-//   real getUserMedia → MediaStream (raw)
-//        ↓
-//   <video> element draws frames
-//        ↓
-//   MediaPipe ImageSegmenter (selfie model) → person mask
-//        ↓
-//   OffscreenCanvas composites: foreground(person) over background(blur or image)
-//        ↓
-//   canvas.captureStream() → fake MediaStream returned to caller
+// Patches navigator.mediaDevices.getUserMedia. WebGL renderer + multiclass selfie segmenter.
 
 (async function () {
   if (window.__bruceEffectCameraInstalled) return;
@@ -22,6 +10,7 @@
     return ss[ss.length - 1];
   })();
   const ASSETS_BASE = SCRIPT?.dataset?.assetsBase || '';
+  const RENDERER_URL = SCRIPT?.dataset?.rendererUrl || '';
 
   // --- Config (kept in sync with chrome.storage via content.js) ---
   let config = { mode: 'none', blurRadius: 15, backgroundImage: null };
@@ -52,46 +41,44 @@
     img.src = config.backgroundImage;
   }
 
-  // Request initial config.
   window.postMessage({ source: 'bruce-effect-camera-inject', type: 'REQUEST_CONFIG' }, '*');
 
-  // --- Bypass Trusted Types policy (e.g. webcamtests.com) so MediaPipe can
-  //     create its internal worker <script> tags. ---
+  // --- Trusted Types bypass (webcamtests.com etc) ---
   if (window.trustedTypes && window.trustedTypes.createPolicy) {
     try {
-      // Default policy: any code path that assigns a string to a TrustedScriptURL
-      // sink will route through this and we hand back the string unchanged.
       window.trustedTypes.createPolicy('default', {
-        createScriptURL: (s) => s,
-        createScript: (s) => s,
-        createHTML: (s) => s
+        createScriptURL: (s) => s, createScript: (s) => s, createHTML: (s) => s
       });
-    } catch (e) {
-      // Already created by the page — try a named policy MediaPipe-style code
-      // can call into. (Not all sinks honor named policies, but worth a shot.)
-      try {
-        window.trustedTypes.createPolicy('bruce-effect', {
-          createScriptURL: (s) => s,
-          createScript: (s) => s,
-          createHTML: (s) => s
-        });
-      } catch (_) { /* ignore */ }
+    } catch (_) { /* default policy already set */ }
+  }
+
+  // --- Load WebGL renderer (sibling extension asset) ---
+  async function loadRenderer() {
+    if (window.BruceWebGLRenderer) return;
+    const code = await (await fetch(RENDERER_URL)).text();
+    const blob = new Blob([code], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    await import(/* webpackIgnore: true */ url);
+    // Fallback: if dynamic import doesn't expose window globals (it does here since renderer
+    // assigns to window.BruceWebGLRenderer directly), give a tiny delay.
+    if (!window.BruceWebGLRenderer) {
+      // Eval as inline script.
+      const s = document.createElement('script');
+      s.textContent = code;
+      document.documentElement.appendChild(s);
+      s.remove();
     }
   }
 
-  // --- Load MediaPipe segmenter lazily (only when first camera request happens) ---
+  // --- Load MediaPipe segmenter lazily ---
   let segmenterPromise = null;
   async function getSegmenter() {
     if (segmenterPromise) return segmenterPromise;
     segmenterPromise = (async () => {
-      // Some hosts (Google Meet, etc.) have a strict script-src CSP that blocks
-      // chrome-extension:// <script src>. MediaPipe internally injects a
-      // <script> to load its wasm glue, so we prefetch into blob: URLs which
-      // virtually every CSP allows.
       async function toBlobUrl(name, mime) {
         const r = await fetch(ASSETS_BASE + name);
-        const b = await r.blob();
-        return URL.createObjectURL(new Blob([await b.arrayBuffer()], { type: mime }));
+        const buf = await r.arrayBuffer();
+        return URL.createObjectURL(new Blob([buf], { type: mime }));
       }
       const [bundleUrl, loaderUrl, wasmUrl] = await Promise.all([
         toBlobUrl('vision_bundle.mjs',        'text/javascript'),
@@ -102,7 +89,6 @@
       const mod = await import(bundleUrl);
       const { ImageSegmenter } = mod;
 
-      // Build the fileset object manually — same shape MediaPipe expects.
       const fileset = {
         wasmLoaderPath: loaderUrl,
         wasmBinaryPath: wasmUrl,
@@ -110,8 +96,8 @@
         assetBinaryPath: wasmUrl
       };
 
-      // Model file too: fetch as ArrayBuffer and hand to baseOptions.modelAssetBuffer
-      const modelBuf = await (await fetch(ASSETS_BASE + 'selfie_segmenter.tflite')).arrayBuffer();
+      // Multiclass model: better hair/edge handling.
+      const modelBuf = await (await fetch(ASSETS_BASE + 'selfie_multiclass_256x256.tflite')).arrayBuffer();
 
       const segmenter = await ImageSegmenter.createFromOptions(fileset, {
         baseOptions: {
@@ -135,207 +121,93 @@
     const width = settings.width || 1280;
     const height = settings.height || 720;
 
-    // Video element to read frames from.
     const video = document.createElement('video');
     video.srcObject = realStream;
     video.muted = true;
     video.playsInline = true;
     await video.play().catch(() => {});
 
-    // Canvases.
-    const outCanvas = document.createElement('canvas');
-    outCanvas.width = width;
-    outCanvas.height = height;
-    const outCtx = outCanvas.getContext('2d');
-
-    const bgCanvas = document.createElement('canvas');
-    bgCanvas.width = width;
-    bgCanvas.height = height;
-    const bgCtx = bgCanvas.getContext('2d');
-
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = width;
-    maskCanvas.height = height;
-    const maskCtx = maskCanvas.getContext('2d');
+    await loadRenderer();
+    const renderer = new window.BruceWebGLRenderer(width, height);
 
     let segmenter = null;
     try { segmenter = await getSegmenter(); }
     catch (e) { console.warn('[BruceEffect] Segmenter load failed, passthrough:', e); }
 
+    // Temporal smoothing buffers (CPU side, per-pixel float).
+    let prevMask = null;
+
     let running = true;
     videoTrack.addEventListener('ended', () => { running = false; });
+
+    // Multiclass categories (selfie_multiclass_256x256):
+    //   0 = background
+    //   1 = hair
+    //   2 = body-skin
+    //   3 = face-skin
+    //   4 = clothes
+    //   5 = others (accessories)
+    // We want person = 1..5.
+    const PERSON_CATS = [1, 2, 3, 4, 5];
 
     function render() {
       if (!running) return;
       if (video.readyState < 2) { requestAnimationFrame(render); return; }
 
       try {
-        const mode = config.mode || 'none';
-
-        if (mode === 'none' || !segmenter) {
-          outCtx.drawImage(video, 0, 0, width, height);
+        if (config.mode === 'none' || !segmenter) {
+          renderer.render(video, new Float32Array(1), 1, 1, { mode: 'none' }, null);
         } else {
-          // 1. Run segmentation -> soft confidence mask (Float32, 0..1 = bg probability or person probability)
           const ts = performance.now();
           const result = segmenter.segmentForVideo(video, ts);
           const cmasks = result.confidenceMasks;
           if (!cmasks || cmasks.length === 0) {
-            outCtx.drawImage(video, 0, 0, width, height);
+            renderer.render(video, new Float32Array(1), 1, 1, { mode: 'none' }, null);
             requestAnimationFrame(render);
             return;
           }
-          // selfie_segmenter outputs one confidence mask. Empirically: high value = person.
-          const cmask = cmasks[0];
-          const mw = cmask.width;
-          const mh = cmask.height;
-          const cdata = cmask.getAsFloat32Array();
 
-          // 2. Build soft alpha mask at the model's native size (256x256 typically).
-          //    Drawing it scaled into maskCanvas gives free bilinear filtering -> smoother edges.
-          const smallCanvas = smallMaskCanvas;
-          smallCanvas.width = mw;
-          smallCanvas.height = mh;
-          const smallCtx = smallCanvasCtx;
-          const smallImage = smallCtx.createImageData(mw, mh);
-          // Soften by remapping confidence with a smoothstep around 0.5 to keep
-          // mostly-opaque interior and mostly-transparent background, but with a
-          // gentle ramp at the edges.
-          for (let i = 0; i < cdata.length; i++) {
-            const v = cdata[i];                       // 0..1, higher = person
-            // Wider smoothstep (0.2..0.8) for a gentler ramp.
-            const t = Math.max(0, Math.min(1, (v - 0.2) / 0.6));
-            const a = (t * t * (3 - 2 * t)) * 255;
-            const idx = i * 4;
-            smallImage.data[idx] = 255;
-            smallImage.data[idx + 1] = 255;
-            smallImage.data[idx + 2] = 255;
-            smallImage.data[idx + 3] = a;
+          // Combine: person_confidence(i) = sum of cmasks[cat][i] for cat in PERSON_CATS.
+          const mw = cmasks[0].width;
+          const mh = cmasks[0].height;
+          const N = mw * mh;
+          let combined = new Float32Array(N);
+          for (const cat of PERSON_CATS) {
+            if (cat >= cmasks.length) continue;
+            const arr = cmasks[cat].getAsFloat32Array();
+            for (let i = 0; i < N; i++) combined[i] += arr[i];
           }
-          smallCtx.putImageData(smallImage, 0, 0);
-          cmask.close();
+          // Clamp.
+          for (let i = 0; i < N; i++) if (combined[i] > 1) combined[i] = 1;
+          for (const m of cmasks) m.close();
 
-          // Upscale with bilinear filter + heavy blur on the alpha for soft feather.
-          // First upscale to an intermediate size to avoid blocky bilinear when going 256 -> 1280 directly.
-          maskCtx.save();
-          maskCtx.clearRect(0, 0, width, height);
-          maskCtx.imageSmoothingEnabled = true;
-          maskCtx.imageSmoothingQuality = 'high';
-          maskCtx.filter = 'blur(6px)';
-          maskCtx.drawImage(smallCanvas, 0, 0, width, height);
-          maskCtx.restore();
-
-          // Temporal smoothing: smoothed = prev*0.55 + new*0.45 (true linear blend).
-          // Done via clear + draw-prev-at-0.55 + draw-new-at-0.45 using 'lighter' (additive)
-          // so alphas don't climb monotonically across frames.
-          if (!hasPrevMask) {
-            prevMaskCtx.clearRect(0, 0, width, height);
-            prevMaskCtx.drawImage(maskCanvas, 0, 0);
-            hasPrevMask = true;
+          // Temporal smoothing.
+          if (!prevMask || prevMask.length !== N) {
+            prevMask = new Float32Array(combined);
           } else {
-            smoothMaskCtx.globalCompositeOperation = 'source-over';
-            smoothMaskCtx.clearRect(0, 0, width, height);
-            smoothMaskCtx.globalAlpha = 0.55;
-            smoothMaskCtx.drawImage(prevMaskCanvas, 0, 0);
-            smoothMaskCtx.globalCompositeOperation = 'lighter';
-            smoothMaskCtx.globalAlpha = 0.45;
-            smoothMaskCtx.drawImage(maskCanvas, 0, 0);
-            smoothMaskCtx.globalAlpha = 1.0;
-            smoothMaskCtx.globalCompositeOperation = 'source-over';
-
-            // Use smoothed as the mask, and save it for next frame's prev.
-            maskCtx.clearRect(0, 0, width, height);
-            maskCtx.drawImage(smoothMaskCanvas, 0, 0);
-
-            prevMaskCtx.clearRect(0, 0, width, height);
-            prevMaskCtx.drawImage(smoothMaskCanvas, 0, 0);
-          }
-
-          // 3. Build background.
-          if (mode === 'blur') {
-            const r = Math.max(1, Math.min(50, config.blurRadius || 15));
-            bgCtx.filter = `blur(${r}px)`;
-            bgCtx.drawImage(video, 0, 0, width, height);
-            bgCtx.filter = 'none';
-          } else if (mode === 'image' && bgImageElement) {
-            // cover-fit
-            const ir = bgImageElement.width / bgImageElement.height;
-            const cr = width / height;
-            let dw, dh, dx, dy;
-            if (ir > cr) {
-              dh = height;
-              dw = height * ir;
-              dx = (width - dw) / 2;
-              dy = 0;
-            } else {
-              dw = width;
-              dh = width / ir;
-              dx = 0;
-              dy = (height - dh) / 2;
+            const alpha = 0.55;     // weight of previous frame (higher = smoother but laggier)
+            for (let i = 0; i < N; i++) {
+              prevMask[i] = prevMask[i] * alpha + combined[i] * (1 - alpha);
             }
-            bgCtx.drawImage(bgImageElement, dx, dy, dw, dh);
-          } else {
-            bgCtx.drawImage(video, 0, 0, width, height);
+            combined = prevMask;
           }
 
-          // 4. Composite: start with background, then draw person on top.
-          outCtx.globalCompositeOperation = 'source-over';
-          outCtx.drawImage(bgCanvas, 0, 0, width, height);
-
-          // Person: draw video, then mask out background using destination-in with maskCanvas.
-          // Use a temp pattern: draw video to a temp area? simpler: use second canvas.
-          // Trick: drawImage video onto out, then destination-in with maskCanvas → keeps only person.
-          // But that wipes the background we just drew. So we composite person on a temp canvas first.
-          const personCanvas = bgCanvas; // reuse; we already used bg.
-          // Actually let's use a third buffer to keep code clear.
-          personCtx.clearRect(0, 0, width, height);
-          personCtx.globalCompositeOperation = 'source-over';
-          personCtx.drawImage(video, 0, 0, width, height);
-          personCtx.globalCompositeOperation = 'destination-in';
-          personCtx.drawImage(maskCanvas, 0, 0, width, height);
-          personCtx.globalCompositeOperation = 'source-over';
-
-          outCtx.drawImage(personCanvasEl, 0, 0, width, height);
+          renderer.render(video, combined, mw, mh, config, bgImageElement);
         }
       } catch (e) {
         console.warn('[BruceEffect] render error:', e);
-        outCtx.drawImage(video, 0, 0, width, height);
+        renderer.render(video, new Float32Array(1), 1, 1, { mode: 'none' }, null);
       }
       requestAnimationFrame(render);
     }
-
-    // Third buffer for the person layer (declared late on purpose, see render).
-    const personCanvasEl = document.createElement('canvas');
-    personCanvasEl.width = width;
-    personCanvasEl.height = height;
-    const personCtx = personCanvasEl.getContext('2d');
-
-    // Small canvas for the model's native-resolution mask (e.g. 256x256).
-    const smallMaskCanvas = document.createElement('canvas');
-    const smallCanvasCtx = smallMaskCanvas.getContext('2d');
-
-    // Buffers for temporal smoothing.
-    const prevMaskCanvas = document.createElement('canvas');
-    prevMaskCanvas.width = width;
-    prevMaskCanvas.height = height;
-    const prevMaskCtx = prevMaskCanvas.getContext('2d');
-    const smoothMaskCanvas = document.createElement('canvas');
-    smoothMaskCanvas.width = width;
-    smoothMaskCanvas.height = height;
-    const smoothMaskCtx = smoothMaskCanvas.getContext('2d');
-    let hasPrevMask = false;
-
     render();
 
-    const outStream = outCanvas.captureStream(30);
-    // Add audio tracks from real stream so meetings still have sound.
+    const outStream = renderer.canvas.captureStream(30);
     realStream.getAudioTracks().forEach(t => outStream.addTrack(t));
-
-    // When caller stops the fake stream, stop the real one too.
     outStream.getVideoTracks()[0].addEventListener('ended', () => {
       running = false;
       videoTrack.stop();
     });
-
     return outStream;
   }
 
@@ -345,26 +217,21 @@
   const realGUM = md.getUserMedia.bind(md);
 
   md.getUserMedia = async function (constraints) {
-    // Only intercept when video is requested.
     if (!constraints || !constraints.video) return realGUM(constraints);
-
     const realStream = await realGUM(constraints);
     try {
-      const fakeStream = await processStream(realStream);
-      return fakeStream;
+      return await processStream(realStream);
     } catch (e) {
       console.warn('[BruceEffect] passthrough due to error:', e);
       return realStream;
     }
   };
 
-  // Older API some pages use.
   if (navigator.getUserMedia) {
-    const legacy = navigator.getUserMedia.bind(navigator);
     navigator.getUserMedia = function (constraints, success, error) {
       md.getUserMedia(constraints).then(success).catch(error);
     };
   }
 
-  console.log('[BruceEffect] installed');
+  console.log('[BruceEffect] installed (WebGL + multiclass)');
 })();

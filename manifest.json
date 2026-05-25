@@ -22,12 +22,14 @@
     {
       "resources": [
         "inject.js",
+        "webgl_renderer.js",
         "vendor/vision_bundle.mjs",
         "vendor/vision_wasm_internal.js",
         "vendor/vision_wasm_internal.wasm",
         "vendor/vision_wasm_nosimd_internal.js",
         "vendor/vision_wasm_nosimd_internal.wasm",
-        "vendor/selfie_segmenter.tflite"
+        "vendor/selfie_segmenter.tflite",
+        "vendor/selfie_multiclass_256x256.tflite"
       ],
       "matches": ["<all_urls>"]
     }

@@ -7,6 +7,7 @@
   s.src = chrome.runtime.getURL('inject.js');
   s.dataset.extensionId = chrome.runtime.id;
   s.dataset.assetsBase = chrome.runtime.getURL('vendor/');
+  s.dataset.rendererUrl = chrome.runtime.getURL('webgl_renderer.js');
   (document.head || document.documentElement).appendChild(s);
   s.remove();
 })();
