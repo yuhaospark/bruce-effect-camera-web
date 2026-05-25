@@ -119,8 +119,8 @@
           delegate: 'GPU'
         },
         runningMode: 'VIDEO',
-        outputCategoryMask: true,
-        outputConfidenceMasks: false
+        outputCategoryMask: false,
+        outputConfidenceMasks: true
       });
       return segmenter;
     })();
@@ -175,27 +175,53 @@
         if (mode === 'none' || !segmenter) {
           outCtx.drawImage(video, 0, 0, width, height);
         } else {
-          // 1. Run segmentation.
+          // 1. Run segmentation -> soft confidence mask (Float32, 0..1 = bg probability or person probability)
           const ts = performance.now();
           const result = segmenter.segmentForVideo(video, ts);
-          const mask = result.categoryMask;
-          // mask is a MPMask. Get the Uint8Array of category indices.
-          const maskData = mask.getAsUint8Array();
-
-          // 2. Build alpha mask in maskCanvas (person = opaque, bg = transparent).
-          // Selfie segmenter: category 0 = background, 1 = person.
-          const maskImage = maskCtx.createImageData(width, height);
-          for (let i = 0; i < maskData.length; i++) {
-            const isPerson = maskData[i] === 0;
-            const a = isPerson ? 255 : 0;
-            const idx = i * 4;
-            maskImage.data[idx] = 255;
-            maskImage.data[idx + 1] = 255;
-            maskImage.data[idx + 2] = 255;
-            maskImage.data[idx + 3] = a;
+          const cmasks = result.confidenceMasks;
+          if (!cmasks || cmasks.length === 0) {
+            outCtx.drawImage(video, 0, 0, width, height);
+            requestAnimationFrame(render);
+            return;
           }
-          maskCtx.putImageData(maskImage, 0, 0);
-          mask.close();
+          // selfie_segmenter outputs one confidence mask. Empirically: high value = person.
+          const cmask = cmasks[0];
+          const mw = cmask.width;
+          const mh = cmask.height;
+          const cdata = cmask.getAsFloat32Array();
+
+          // 2. Build soft alpha mask at the model's native size (256x256 typically).
+          //    Drawing it scaled into maskCanvas gives free bilinear filtering -> smoother edges.
+          const smallCanvas = smallMaskCanvas;
+          smallCanvas.width = mw;
+          smallCanvas.height = mh;
+          const smallCtx = smallCanvasCtx;
+          const smallImage = smallCtx.createImageData(mw, mh);
+          // Soften by remapping confidence with a smoothstep around 0.5 to keep
+          // mostly-opaque interior and mostly-transparent background, but with a
+          // gentle ramp at the edges.
+          for (let i = 0; i < cdata.length; i++) {
+            const v = cdata[i];                       // 0..1, higher = person
+            // smoothstep edges: lo=0.35, hi=0.65
+            const t = Math.max(0, Math.min(1, (v - 0.35) / 0.30));
+            const a = (t * t * (3 - 2 * t)) * 255;
+            const idx = i * 4;
+            smallImage.data[idx] = 255;
+            smallImage.data[idx + 1] = 255;
+            smallImage.data[idx + 2] = 255;
+            smallImage.data[idx + 3] = a;
+          }
+          smallCtx.putImageData(smallImage, 0, 0);
+          cmask.close();
+
+          // Upscale with bilinear filter + slight blur on the alpha for soft feather.
+          maskCtx.save();
+          maskCtx.clearRect(0, 0, width, height);
+          maskCtx.imageSmoothingEnabled = true;
+          maskCtx.imageSmoothingQuality = 'high';
+          maskCtx.filter = 'blur(2px)';
+          maskCtx.drawImage(smallCanvas, 0, 0, width, height);
+          maskCtx.restore();
 
           // 3. Build background.
           if (mode === 'blur') {
@@ -255,6 +281,10 @@
     personCanvasEl.width = width;
     personCanvasEl.height = height;
     const personCtx = personCanvasEl.getContext('2d');
+
+    // Small canvas for the model's native-resolution mask (e.g. 256x256).
+    const smallMaskCanvas = document.createElement('canvas');
+    const smallCanvasCtx = smallMaskCanvas.getContext('2d');
 
     render();
 
