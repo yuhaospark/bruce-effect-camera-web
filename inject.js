@@ -186,7 +186,7 @@
           // Selfie segmenter: category 0 = background, 1 = person.
           const maskImage = maskCtx.createImageData(width, height);
           for (let i = 0; i < maskData.length; i++) {
-            const isPerson = maskData[i] !== 0;
+            const isPerson = maskData[i] === 0;
             const a = isPerson ? 255 : 0;
             const idx = i * 4;
             maskImage.data[idx] = 255;
