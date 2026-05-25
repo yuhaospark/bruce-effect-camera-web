@@ -224,9 +224,8 @@
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
-          // Temporal smoothing: smoothed = prev*0.7 + new*0.3 (heavier on prev for less flicker).
-          // Done via clear + draw-prev-at-0.7 + draw-new-at-0.3 using 'lighter' (additive)
-          // so alphas don't climb monotonically across frames.
+          // Temporal smoothing: smoothed = prev*0.6 + new*0.4 (sweet spot between
+          // flicker reduction and motion lag).
           if (!hasPrevMask) {
             prevMaskCtx.clearRect(0, 0, width, height);
             prevMaskCtx.drawImage(maskCanvas, 0, 0);
@@ -234,10 +233,10 @@
           } else {
             smoothMaskCtx.globalCompositeOperation = 'source-over';
             smoothMaskCtx.clearRect(0, 0, width, height);
-            smoothMaskCtx.globalAlpha = 0.7;
+            smoothMaskCtx.globalAlpha = 0.6;
             smoothMaskCtx.drawImage(prevMaskCanvas, 0, 0);
             smoothMaskCtx.globalCompositeOperation = 'lighter';
-            smoothMaskCtx.globalAlpha = 0.3;
+            smoothMaskCtx.globalAlpha = 0.4;
             smoothMaskCtx.drawImage(maskCanvas, 0, 0);
             smoothMaskCtx.globalAlpha = 1.0;
             smoothMaskCtx.globalCompositeOperation = 'source-over';
