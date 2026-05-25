@@ -226,6 +226,25 @@
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
+          // Erosion pass: shrink the mask inward by a few pixels to kill the
+          // halo of raw background that bleeds through near the silhouette.
+          // Implementation: 'source-in' with itself slightly downscaled in alpha
+          // doesn't help; instead we use a darken approach -- draw the mask onto
+          // itself with reduced alpha at small offsets, then the only pixels that
+          // stay fully opaque are those that were opaque in EVERY shifted copy =
+          // morphological erosion approximation.
+          erodeCtx.clearRect(0, 0, width, height);
+          erodeCtx.globalCompositeOperation = 'source-over';
+          erodeCtx.drawImage(maskCanvas, 0, 0);
+          erodeCtx.globalCompositeOperation = 'destination-in';
+          const ERODE_PX = 4;
+          for (const [dx, dy] of [[ERODE_PX,0],[-ERODE_PX,0],[0,ERODE_PX],[0,-ERODE_PX]]) {
+            erodeCtx.drawImage(maskCanvas, dx, dy);
+          }
+          erodeCtx.globalCompositeOperation = 'source-over';
+          maskCtx.clearRect(0, 0, width, height);
+          maskCtx.drawImage(erodeCanvas, 0, 0);
+
           // Temporal smoothing: smoothed = prev*0.6 + new*0.4 (sweet spot between
           // flicker reduction and motion lag).
           if (!hasPrevMask) {
@@ -324,6 +343,12 @@
     smoothMaskCanvas.height = height;
     const smoothMaskCtx = smoothMaskCanvas.getContext('2d');
     let hasPrevMask = false;
+
+    // Buffer for morphological erosion (halo killer).
+    const erodeCanvas = document.createElement('canvas');
+    erodeCanvas.width = width;
+    erodeCanvas.height = height;
+    const erodeCtx = erodeCanvas.getContext('2d');
 
     render();
 
