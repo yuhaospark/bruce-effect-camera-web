@@ -202,10 +202,8 @@
           // gentle ramp at the edges.
           for (let i = 0; i < cdata.length; i++) {
             const v = cdata[i];                       // 0..1, higher = person
-            // Smoothstep shifted toward person (0.4..0.85) so the soft-edge band
-            // sits on the BACKGROUND side of the person silhouette. This hides the
-            // raw (unblurred) pixels that would otherwise leak through at alpha=0.5.
-            const t = Math.max(0, Math.min(1, (v - 0.4) / 0.45));
+            // Wider smoothstep (0.2..0.8) for a gentler ramp.
+            const t = Math.max(0, Math.min(1, (v - 0.2) / 0.6));
             const a = (t * t * (3 - 2 * t)) * 255;
             const idx = i * 4;
             smallImage.data[idx] = 255;
