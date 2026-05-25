@@ -202,8 +202,8 @@
           // gentle ramp at the edges.
           for (let i = 0; i < cdata.length; i++) {
             const v = cdata[i];                       // 0..1, higher = person
-            // smoothstep edges: lo=0.35, hi=0.65
-            const t = Math.max(0, Math.min(1, (v - 0.35) / 0.30));
+            // Wider smoothstep (0.2..0.8) for a gentler ramp.
+            const t = Math.max(0, Math.min(1, (v - 0.2) / 0.6));
             const a = (t * t * (3 - 2 * t)) * 255;
             const idx = i * 4;
             smallImage.data[idx] = 255;
@@ -214,12 +214,13 @@
           smallCtx.putImageData(smallImage, 0, 0);
           cmask.close();
 
-          // Upscale with bilinear filter + slight blur on the alpha for soft feather.
+          // Upscale with bilinear filter + heavy blur on the alpha for soft feather.
+          // First upscale to an intermediate size to avoid blocky bilinear when going 256 -> 1280 directly.
           maskCtx.save();
           maskCtx.clearRect(0, 0, width, height);
           maskCtx.imageSmoothingEnabled = true;
           maskCtx.imageSmoothingQuality = 'high';
-          maskCtx.filter = 'blur(2px)';
+          maskCtx.filter = 'blur(6px)';
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
