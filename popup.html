@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: -apple-system, sans-serif; width: 280px; margin: 0; padding: 12px; background: #1c1c1e; color: #f2f2f7; }
+    h1 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+    .row { margin-bottom: 12px; }
+    label { display: block; font-size: 11px; color: #98989d; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .modes { display: flex; gap: 4px; background: #2c2c2e; border-radius: 8px; padding: 3px; }
+    .modes button { flex: 1; background: transparent; color: #f2f2f7; border: none; padding: 6px 0; font-size: 12px; border-radius: 6px; cursor: pointer; }
+    .modes button.active { background: #0a84ff; color: white; }
+    input[type="range"] { width: 100%; }
+    .file-row { display: flex; gap: 8px; align-items: center; }
+    .file-row button { background: #2c2c2e; color: #f2f2f7; border: none; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .file-row button:hover { background: #3a3a3c; }
+    .preview { margin-top: 6px; width: 100%; height: 70px; background: #2c2c2e; border-radius: 6px; background-size: cover; background-position: center; }
+    .hint { font-size: 11px; color: #8e8e93; line-height: 1.4; margin-top: 8px; }
+    .value { color: #0a84ff; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <h1>Bruce Effect Camera</h1>
+
+  <div class="row">
+    <label>背景效果</label>
+    <div class="modes" id="modes">
+      <button data-mode="none">无</button>
+      <button data-mode="blur">模糊</button>
+      <button data-mode="image">图片</button>
+    </div>
+  </div>
+
+  <div class="row" id="blurRow" style="display:none;">
+    <label>模糊强度 <span class="value" id="blurValue">15</span></label>
+    <input type="range" id="blur" min="1" max="50" value="15">
+  </div>
+
+  <div class="row" id="imageRow" style="display:none;">
+    <label>背景图片</label>
+    <div class="file-row">
+      <button id="pickImage">选择文件…</button>
+      <button id="clearImage">清除</button>
+    </div>
+    <input type="file" id="fileInput" accept="image/*" style="display:none;">
+    <div class="preview" id="preview"></div>
+  </div>
+
+  <div class="hint">
+    刷新所在网页（或重新加入会议）后生效。<br>
+    支持 Google Meet / 飞书 web / Discord / Whereby 等所有调用摄像头的网页。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

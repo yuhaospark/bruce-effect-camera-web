@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Bruce Effect Camera",
+  "version": "0.1.0",
+  "description": "网页摄像头虚拟背景：模糊 / 自定义背景图。劫持 getUserMedia，对 Google Meet / 飞书 web / Discord 等所有网页会议生效。",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Bruce Effect Camera"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "ISOLATED"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "inject.js",
+        "vendor/vision_bundle.mjs",
+        "vendor/vision_wasm_internal.js",
+        "vendor/vision_wasm_internal.wasm",
+        "vendor/vision_wasm_nosimd_internal.js",
+        "vendor/vision_wasm_nosimd_internal.wasm",
+        "vendor/selfie_segmenter.tflite"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}
