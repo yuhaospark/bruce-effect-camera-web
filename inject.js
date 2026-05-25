@@ -55,6 +55,30 @@
   // Request initial config.
   window.postMessage({ source: 'bruce-effect-camera-inject', type: 'REQUEST_CONFIG' }, '*');
 
+  // --- Bypass Trusted Types policy (e.g. webcamtests.com) so MediaPipe can
+  //     create its internal worker <script> tags. ---
+  if (window.trustedTypes && window.trustedTypes.createPolicy) {
+    try {
+      // Default policy: any code path that assigns a string to a TrustedScriptURL
+      // sink will route through this and we hand back the string unchanged.
+      window.trustedTypes.createPolicy('default', {
+        createScriptURL: (s) => s,
+        createScript: (s) => s,
+        createHTML: (s) => s
+      });
+    } catch (e) {
+      // Already created by the page — try a named policy MediaPipe-style code
+      // can call into. (Not all sinks honor named policies, but worth a shot.)
+      try {
+        window.trustedTypes.createPolicy('bruce-effect', {
+          createScriptURL: (s) => s,
+          createScript: (s) => s,
+          createHTML: (s) => s
+        });
+      } catch (_) { /* ignore */ }
+    }
+  }
+
   // --- Load MediaPipe segmenter lazily (only when first camera request happens) ---
   let segmenterPromise = null;
   async function getSegmenter() {
