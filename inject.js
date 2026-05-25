@@ -224,6 +224,28 @@
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
+          // Temporal smoothing: blend with previous frame's mask to kill edge jitter.
+          // alpha controls how much we trust the new frame (0.45 = 55% prev + 45% new).
+          if (!hasPrevMask) {
+            prevMaskCtx.drawImage(maskCanvas, 0, 0);
+            hasPrevMask = true;
+          } else {
+            // smoothedMask = prev * 0.55 + current * 0.45
+            smoothMaskCtx.clearRect(0, 0, width, height);
+            smoothMaskCtx.globalAlpha = 1.0;
+            smoothMaskCtx.drawImage(prevMaskCanvas, 0, 0);
+            smoothMaskCtx.globalAlpha = 0.45;
+            smoothMaskCtx.drawImage(maskCanvas, 0, 0);
+            smoothMaskCtx.globalAlpha = 1.0;
+
+            // Save smoothed result back as the mask for compositing, AND keep it as next prev.
+            maskCtx.clearRect(0, 0, width, height);
+            maskCtx.drawImage(smoothMaskCanvas, 0, 0);
+
+            prevMaskCtx.clearRect(0, 0, width, height);
+            prevMaskCtx.drawImage(smoothMaskCanvas, 0, 0);
+          }
+
           // 3. Build background.
           if (mode === 'blur') {
             const r = Math.max(1, Math.min(50, config.blurRadius || 15));
@@ -286,6 +308,17 @@
     // Small canvas for the model's native-resolution mask (e.g. 256x256).
     const smallMaskCanvas = document.createElement('canvas');
     const smallCanvasCtx = smallMaskCanvas.getContext('2d');
+
+    // Buffers for temporal smoothing.
+    const prevMaskCanvas = document.createElement('canvas');
+    prevMaskCanvas.width = width;
+    prevMaskCanvas.height = height;
+    const prevMaskCtx = prevMaskCanvas.getContext('2d');
+    const smoothMaskCanvas = document.createElement('canvas');
+    smoothMaskCanvas.width = width;
+    smoothMaskCanvas.height = height;
+    const smoothMaskCtx = smoothMaskCanvas.getContext('2d');
+    let hasPrevMask = false;
 
     render();
 
