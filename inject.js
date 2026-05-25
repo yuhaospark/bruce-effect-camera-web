@@ -237,7 +237,7 @@
           erodeCtx.globalCompositeOperation = 'source-over';
           erodeCtx.drawImage(maskCanvas, 0, 0);
           erodeCtx.globalCompositeOperation = 'destination-in';
-          const ERODE_PX = 2;
+          const ERODE_PX = 4;
           for (const [dx, dy] of [[ERODE_PX,0],[-ERODE_PX,0],[0,ERODE_PX],[0,-ERODE_PX]]) {
             erodeCtx.drawImage(maskCanvas, dx, dy);
           }
