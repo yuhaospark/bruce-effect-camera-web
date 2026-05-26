@@ -100,7 +100,10 @@
       ]);
 
       const mod = await import(bundleUrl);
-      const { ImageSegmenter } = mod;
+      const { ImageSegmenter, FaceDetector } = mod;
+      // Stash FaceDetector ctor + fileset for the separate loader below.
+      window.__bruceEffect_FaceDetector = FaceDetector;
+      window.__bruceEffect_fileset = null;     // set below
 
       // Build the fileset object manually — same shape MediaPipe expects.
       const fileset = {
@@ -109,6 +112,7 @@
         assetLoaderPath: loaderUrl,
         assetBinaryPath: wasmUrl
       };
+      window.__bruceEffect_fileset = fileset;
 
       // Model file too: fetch as ArrayBuffer and hand to baseOptions.modelAssetBuffer
       const modelBuf = await (await fetch(ASSETS_BASE + 'selfie_segmenter.tflite')).arrayBuffer();
@@ -125,6 +129,30 @@
       return segmenter;
     })();
     return segmenterPromise;
+  }
+
+  // --- Face detector (gates the person mask to people whose face is visible) ---
+  let faceDetectorPromise = null;
+  async function getFaceDetector() {
+    if (faceDetectorPromise) return faceDetectorPromise;
+    faceDetectorPromise = (async () => {
+      // Make sure segmenter loader has populated the fileset + ctor.
+      await getSegmenter();
+      const FaceDetector = window.__bruceEffect_FaceDetector;
+      const fileset = window.__bruceEffect_fileset;
+      if (!FaceDetector || !fileset) throw new Error('FaceDetector unavailable');
+      const modelBuf = await (await fetch(ASSETS_BASE + 'blaze_face_short_range.tflite')).arrayBuffer();
+      const detector = await FaceDetector.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetBuffer: new Uint8Array(modelBuf),
+          delegate: 'GPU'
+        },
+        runningMode: 'VIDEO',
+        minDetectionConfidence: 0.5
+      });
+      return detector;
+    })();
+    return faceDetectorPromise;
   }
 
   // --- The processing pipeline. Returns a new MediaStream. ---
@@ -161,6 +189,10 @@
     let segmenter = null;
     try { segmenter = await getSegmenter(); }
     catch (e) { console.warn('[BruceEffect] Segmenter load failed, passthrough:', e); }
+
+    let faceDetector = null;
+    try { faceDetector = await getFaceDetector(); }
+    catch (e) { console.warn('[BruceEffect] FaceDetector load failed, no face gating:', e); }
 
     let running = true;
     videoTrack.addEventListener('ended', () => { running = false; });
@@ -223,6 +255,59 @@
           maskCtx.filter = 'blur(6px)';
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
+
+          // Face gating: keep only mask pixels that fall within a vertical
+          // ellipse anchored on a detected face. People whose face isn't
+          // visible (e.g. someone walking past with their back to camera)
+          // get dropped into the background.
+          if (faceDetector) {
+            let faces = [];
+            try {
+              const fres = faceDetector.detectForVideo(video, ts);
+              faces = (fres && fres.detections) || [];
+            } catch (_) { /* ignore detector hiccups */ }
+
+            gateCtx.clearRect(0, 0, width, height);
+            if (faces.length > 0) {
+              gateCtx.fillStyle = 'white';
+              for (const det of faces) {
+                const bb = det.boundingBox;
+                if (!bb) continue;
+                // bbox can come in normalized (0..1) or pixel coords depending on build;
+                // detect & normalize.
+                let fx = bb.originX, fy = bb.originY, fw = bb.width, fh = bb.height;
+                if (fw <= 1.5 && fh <= 1.5) { // normalized
+                  fx *= width; fy *= height; fw *= width; fh *= height;
+                }
+                const cx = fx + fw / 2;
+                const faceTop = fy;
+                // Person ellipse: centered horizontally on face, extends from
+                // ~1 face-height above the face down ~9 face-heights, ~3 face-widths wide.
+                const ellW = fw * 3.0;
+                const ellH = fh * 10.0;
+                const ellCx = cx;
+                const ellCy = faceTop + ellH * 0.35; // face sits in upper third
+                gateCtx.beginPath();
+                gateCtx.ellipse(ellCx, ellCy, ellW / 2, ellH / 2, 0, 0, Math.PI * 2);
+                gateCtx.fill();
+              }
+              // Soft feather on the gate so edges blend.
+              gateCtx.save();
+              gateCtx.globalCompositeOperation = 'source-over';
+              gateCtx.filter = 'blur(20px)';
+              gateCtx.drawImage(gateCanvas, 0, 0);
+              gateCtx.restore();
+              gateCtx.filter = 'none';
+
+              // Intersect mask with gate: maskCanvas ∩= gateCanvas
+              maskCtx.globalCompositeOperation = 'destination-in';
+              maskCtx.drawImage(gateCanvas, 0, 0, width, height);
+              maskCtx.globalCompositeOperation = 'source-over';
+            } else {
+              // No faces detected → wipe the mask entirely (everything becomes background).
+              maskCtx.clearRect(0, 0, width, height);
+            }
+          }
 
           // Temporal smoothing: smoothed = prev*0.6 + new*0.4 (sweet spot between
           // flicker reduction and motion lag).
@@ -322,6 +407,12 @@
     smoothMaskCanvas.height = height;
     const smoothMaskCtx = smoothMaskCanvas.getContext('2d');
     let hasPrevMask = false;
+
+    // Buffer for face-gate ellipses.
+    const gateCanvas = document.createElement('canvas');
+    gateCanvas.width = width;
+    gateCanvas.height = height;
+    const gateCtx = gateCanvas.getContext('2d');
 
     render();
 
