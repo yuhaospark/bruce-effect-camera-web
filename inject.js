@@ -234,8 +234,10 @@
           // gentle ramp at the edges.
           for (let i = 0; i < cdata.length; i++) {
             const v = cdata[i];                       // 0..1, higher = person
-            // Wider smoothstep (0.2..0.8) for a gentler ramp.
-            const t = Math.max(0, Math.min(1, (v - 0.2) / 0.6));
+            // Tighter smoothstep (0.45..0.7): narrower ramp, edge sits closer
+            // to "definitely person" so the halo around the silhouette is
+            // small and stays opaque enough to fully cover the background.
+            const t = Math.max(0, Math.min(1, (v - 0.45) / 0.25));
             const a = (t * t * (3 - 2 * t)) * 255;
             const idx = i * 4;
             smallImage.data[idx] = 255;
@@ -252,7 +254,7 @@
           maskCtx.clearRect(0, 0, width, height);
           maskCtx.imageSmoothingEnabled = true;
           maskCtx.imageSmoothingQuality = 'high';
-          maskCtx.filter = 'blur(6px)';
+          maskCtx.filter = 'blur(2px)';
           maskCtx.drawImage(smallCanvas, 0, 0, width, height);
           maskCtx.restore();
 
