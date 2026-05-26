@@ -33,7 +33,8 @@
         "vendor/vision_wasm_internal.wasm",
         "vendor/vision_wasm_nosimd_internal.js",
         "vendor/vision_wasm_nosimd_internal.wasm",
-        "vendor/selfie_segmenter.tflite"
+        "vendor/selfie_segmenter.tflite",
+        "vendor/blaze_face_short_range.tflite"
       ],
       "matches": ["<all_urls>"]
     }
